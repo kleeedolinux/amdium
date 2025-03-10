@@ -1,0 +1,16 @@
+{
+  "mappings": {
+    "com/kleeaiaiai/amdium/mixin/GameRendererMixin": {
+      "onResized": "Lnet/minecraft/class_757;method_3169(II)V",
+      "render": "Lnet/minecraft/class_757;method_3192(FJZ)V"
+    }
+  },
+  "data": {
+    "named:intermediary": {
+      "com/kleeaiaiai/amdium/mixin/GameRendererMixin": {
+        "onResized": "Lnet/minecraft/class_757;method_3169(II)V",
+        "render": "Lnet/minecraft/class_757;method_3192(FJZ)V"
+      }
+    }
+  }
+}

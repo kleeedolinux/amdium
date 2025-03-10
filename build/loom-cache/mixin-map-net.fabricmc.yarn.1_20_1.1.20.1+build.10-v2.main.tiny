@@ -1,0 +1,2 @@
+v1	named	intermediary
+FIELD	com/kleeaiaiai/amdium/mixin/GameRendererMixin	Lnet/minecraft/client/MinecraftClient;	client	field_4015

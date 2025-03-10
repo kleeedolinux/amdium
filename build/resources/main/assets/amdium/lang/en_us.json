@@ -1,0 +1,11 @@
+{
+  "screen.amdium.config": "AMDium Settings",
+  "option.amdium.enabled": "FSR: %s",
+  "option.amdium.auto_enable": "Auto-Enable: %s",
+  "option.amdium.fsr_type": "FSR Version: %s",
+  "option.amdium.quality_mode": "Quality Mode: %s",
+  "option.amdium.frame_generation": "Frame Generation: %s",
+  "key.amdium.toggle": "Toggle FSR",
+  "category.amdium.keybinds": "AMDium",
+  "info.amdium.default_fsr1": "FSR 1.0 is activated by default for best compatibility"
+} 

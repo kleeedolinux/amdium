@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "amdium",
+  "version": "1.0.0",
+  "name": "AMDium",
+  "description": "AMD FSR 3.0 implementation for Minecraft to enhance graphics performance",
+  "authors": [
+    "Kleeaiaiai"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/amdium/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.kleeaiaiai.amdium.AMDium"
+    ],
+    "modmenu": [
+      "com.kleeaiaiai.amdium.config.AMDiumModMenuIntegration"
+    ]
+  },
+  "mixins": [
+    "amdium.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "fabric-api": ">=0.92.3",
+    "minecraft": "~1.20.1",
+    "java": ">=17"
+  }
+} 
