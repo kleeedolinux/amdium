@@ -1,39 +1,44 @@
-# AMDium - FSR 3.0 for Minecraft
+**AMDium - Boost Minecraft Performance with FSR Magic**  
 
-AMDium is a Fabric mod that implements AMD FidelityFX Super Resolution (FSR) 3.0 technology for Minecraft, enhancing graphics performance while maintaining visual quality.
+**What is AMDium?**  
+AMDium is a Fabric mod that brings AMD’s FSR tech to Minecraft, giving your game a smooth performance boost without making it look blocky or blurry. Think of it as a clever "zoom and enhance" trick for your GPU—renders the game at a lower resolution but keeps it looking sharp on your screen.  
 
-## Features
+**Why You’ll Love It**  
+- **Smoother FPS**: Perfect for potato PCs or maxing out shaders.  
+- **Crisp Visuals**: Smart upscaling keeps edges clean (no jagged trees!).  
+- **Tweak It Your Way**: Adjust sharpness or let it auto-enable when your FPS drops.  
+- **Easy to Use**: Toggle on/off with a single keypress (F10, baby!).  
 
-- **FSR 3.0 Upscaling**: Render the game at a lower resolution and upscale it to your display resolution with minimal quality loss
-- **Frame Generation**: Generate intermediate frames to improve perceived smoothness
-- **Quality Settings**: Choose from multiple quality presets (Ultra Quality, Quality, Balanced, Performance, Ultra Performance)
-- **Customizable**: Adjust sharpness and frame generation strength to your preference
-- **Toggle Key**: Press F10 to quickly enable/disable FSR
+**Pick Your Performance Mode**  
+- **Ultra Quality**: "My PC’s decent, but I want extra frames." (≈30% FPS boost)  
+- **Quality**: "I need a balance between pretty and smooth." (≈50% FPS boost)  
+- **Balanced**: "The sweet spot for most players." (≈70% FPS boost)  
+- **Performance**: "My PC is wheezing—help!" (Double your FPS!)  
+- **Ultra Performance**: "I’m playing on a toaster." (Triple FPS for emergencies)  
 
-## Requirements
+**Getting Started**  
+1. **Install Fabric** for Minecraft 1.20.1 ([guide here](https://fabricmc.net/use/)).  
+2. **Drag and Drop**: Download [AMDium](your-mod-link) and [Fabric API](https://www.curseforge.com/minecraft/mc-mods/fabric-api) into your `mods` folder.  
+3. **Launch Minecraft** and press `F9` to unleash FSR!  
 
-- Minecraft 1.20.1
-- Fabric Loader 0.16.10+
-- Fabric API 0.92.3+
-- Java 17+
+**Pro Tips**  
+- **Sharpness Slider**: Default is 0.7. Crank it up for crispy textures, dial it down if things look grainy.  
+- **Auto-Rescue Mode**: Let AMDium kick in automatically when your FPS tanks.  
+- **Fullscreen? Yes!** Works best in native resolution.  
 
-## Installation
+**Uh-Oh, Fixes!**  
+- **Blurry or glitchy?** Try lowering sharpness or restarting the game.  
+- **FSR turned off randomly?** Smash that `F10` key to resurrect it.  
 
-1. Install [Fabric Loader](https://fabricmc.net/use/) for Minecraft 1.20.1
-2. Download AMDium and place it in your mods folder
-3. Download [Fabric API](https://www.curseforge.com/minecraft/mc-mods/fabric-api) and place it in your mods folder
-4. Launch Minecraft with Fabric
+**Credits & Shoutouts**  
+- Thanks to **AMD** for the FSR magic.  
+- Big love to the **Fabric team** and the Minecraft modding community for keeping the blocky dream alive.  
 
-## Usage
+**Made By**  
+A tired dev who just wanted to play Minecraft with shaders (Kleeaiaiai).  
 
-- Press F10 to toggle FSR on/off
-- Access settings through the Mod Menu (if installed)
-- Adjust quality settings to balance performance and visual quality
+---  
+*License: MIT (aka "Do whatever, just don’t sue me!")*  
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Author
-
-- Kleeaiaiai 
+---  
+**TL;DR**: Install AMDium, press F10, and watch your FPS soar. Your eyeballs won’t even notice the trickery. 🚀
