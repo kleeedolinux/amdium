@@ -28,7 +28,7 @@ AMDium is a Fabric mod that brings AMD’s FSR tech to Minecraft, giving your ga
 
 **Uh-Oh, Fixes!**  
 - **Blurry or glitchy?** Try lowering sharpness or restarting the game.  
-- **FSR turned off randomly?** Smash that `F10` key to resurrect it.  
+ 
 
 **Credits & Shoutouts**  
 - Thanks to **AMD** for the FSR magic.  
