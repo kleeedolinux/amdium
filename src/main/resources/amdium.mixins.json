@@ -4,7 +4,9 @@
   "package": "com.kleeaiaiai.amdium.mixin",
   "compatibilityLevel": "JAVA_17",
   "client": [
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "VideoOptionsScreenMixin",
+    "TitleScreenMixin"
   ],
   "injectors": {
     "defaultRequire": 1

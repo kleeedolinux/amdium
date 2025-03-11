@@ -19,6 +19,7 @@ public class AMDiumModMenuIntegration {
         private int buttonY;
         private static final int BUTTON_HEIGHT = 20;
         private static final int BUTTON_SPACING = 24;
+        private boolean settingsChanged = false;
         
         protected AMDiumConfigScreen(Screen parent) {
             super(Text.translatable("screen.amdium.config"));
@@ -35,6 +36,7 @@ public class AMDiumModMenuIntegration {
                     button -> {
                         config.setEnabled(!config.isEnabled());
                         button.setMessage(Text.translatable("option.amdium.enabled", config.isEnabled() ? "ON" : "OFF"));
+                        settingsChanged = true;
                     });
             
             // Add a button to toggle auto-enable
@@ -42,6 +44,7 @@ public class AMDiumModMenuIntegration {
                     button -> {
                         config.setAutoEnable(!config.isAutoEnable());
                         button.setMessage(Text.translatable("option.amdium.auto_enable", config.isAutoEnable() ? "ON" : "OFF"));
+                        settingsChanged = true;
                     });
             
             // Add a button to cycle through FSR types
@@ -51,6 +54,7 @@ public class AMDiumModMenuIntegration {
                         int nextIndex = (config.getFsrType().ordinal() + 1) % types.length;
                         config.setFsrType(types[nextIndex]);
                         button.setMessage(Text.translatable("option.amdium.fsr_type", config.getFsrType().getDisplayName()));
+                        settingsChanged = true;
                     });
             
             // Add a button to cycle through quality modes
@@ -60,19 +64,20 @@ public class AMDiumModMenuIntegration {
                         int nextIndex = (config.getQualityMode().ordinal() + 1) % modes.length;
                         config.setQualityMode(modes[nextIndex]);
                         button.setMessage(Text.translatable("option.amdium.quality_mode", config.getQualityMode().getDisplayName()));
-                    });
-            
-            // Add a button to toggle frame generation
-            addButton(Text.translatable("option.amdium.frame_generation", config.isFrameGeneration() ? "ON" : "OFF"),
-                    button -> {
-                        config.setFrameGeneration(!config.isFrameGeneration());
-                        button.setMessage(Text.translatable("option.amdium.frame_generation", config.isFrameGeneration() ? "ON" : "OFF"));
+                        settingsChanged = true;
                     });
             
             // Add a done button
             addButton(Text.translatable("gui.done"),
                     button -> {
-                        config.save();
+                        if (settingsChanged) {
+                            config.save();
+                            try {
+                                AMDium.getInstance().restartFSRProcessor();
+                            } catch (Exception e) {
+                                AMDium.LOGGER.error("Error applying FSR changes", e);
+                            }
+                        }
                         this.client.setScreen(this.parent);
                     });
         }
@@ -95,11 +100,16 @@ public class AMDiumModMenuIntegration {
                     this.width / 2 - this.textRenderer.getWidth(description) / 2, 
                     this.height / 6 + BUTTON_SPACING * 3 + 5, 0xAAAAAA);
             
-            // Draw note about FSR 1.0 being activated by default
-            String defaultNote = "FSR 1.0 is activated by default for best compatibility";
-            context.drawTextWithShadow(this.textRenderer, defaultNote,
-                    this.width / 2 - this.textRenderer.getWidth(defaultNote) / 2,
-                    this.height - 40, 0xFFAA00);
+            // Draw status indicator
+            String statusText = "Status: " + (AMDium.getInstance().isFSREnabled() ? "Active" : "Inactive");
+            int statusColor = AMDium.getInstance().isFSREnabled() ? 0x55FF55 : 0xFF5555;
+            context.drawTextWithShadow(this.textRenderer, statusText, 10, 10, statusColor);
+            
+            // Draw settings changed indicator
+            if (settingsChanged) {
+                context.drawTextWithShadow(this.textRenderer, "* Settings changed",
+                    this.width - 120, 10, 0xFFFF55);
+            }
             
             super.render(context, mouseX, mouseY, delta);
         }

@@ -1,9 +1,7 @@
 package com.kleeaiaiai.amdium.fsr;
 
 public enum FSRType {
-    FSR_1("FSR 1.0", "Basic upscaling with edge detection"),
-    FSR_2("FSR 2.0", "Temporal upscaling with motion vectors"),
-    FSR_3("FSR 3.0", "Advanced upscaling with frame generation");
+    FSR_1("FSR 1.0", "Enhanced upscaling with edge detection and sharpening");
     
     private final String displayName;
     private final String description;

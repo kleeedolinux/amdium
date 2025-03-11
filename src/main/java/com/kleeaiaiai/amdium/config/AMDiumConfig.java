@@ -19,10 +19,8 @@ public class AMDiumConfig {
     private boolean enabled = true;
     private boolean autoEnable = false;
     private FSRQualityMode qualityMode = FSRQualityMode.BALANCED;
-    private FSRType fsrType = FSRType.FSR_3;
+    private FSRType fsrType = FSRType.FSR_1;
     private float sharpness = 0.7f;
-    private boolean frameGeneration = true;
-    private int frameGenerationStrength = 5;
     
     public void load() {
         try {
@@ -32,10 +30,8 @@ public class AMDiumConfig {
                     this.enabled = loaded.enabled;
                     this.autoEnable = loaded.autoEnable;
                     this.qualityMode = loaded.qualityMode;
-                    this.fsrType = loaded.fsrType != null ? loaded.fsrType : FSRType.FSR_3;
+                    this.fsrType = loaded.fsrType != null ? loaded.fsrType : FSRType.FSR_1;
                     this.sharpness = loaded.sharpness;
-                    this.frameGeneration = loaded.frameGeneration;
-                    this.frameGenerationStrength = loaded.frameGenerationStrength;
                 }
                 AMDium.LOGGER.info("Loaded AMDium configuration");
             } else {
@@ -102,19 +98,11 @@ public class AMDiumConfig {
         this.sharpness = Math.max(0.0f, Math.min(1.0f, sharpness));
     }
     
-    public boolean isFrameGeneration() {
-        return frameGeneration;
-    }
-    
-    public void setFrameGeneration(boolean frameGeneration) {
-        this.frameGeneration = frameGeneration;
-    }
-    
-    public int getFrameGenerationStrength() {
-        return frameGenerationStrength;
-    }
-    
-    public void setFrameGenerationStrength(int frameGenerationStrength) {
-        this.frameGenerationStrength = Math.max(1, Math.min(10, frameGenerationStrength));
+    /**
+     * Gets the scaling factor for rendering (inverse of the quality mode's scale factor)
+     * @return The scaling factor (e.g., 0.5 for 50% resolution)
+     */
+    public float getScalingFactor() {
+        return 1.0f / qualityMode.getScaleFactor();
     }
 } 

@@ -3,6 +3,7 @@ package com.kleeaiaiai.amdium.fsr;
 import com.kleeaiaiai.amdium.AMDium;
 import com.kleeaiaiai.amdium.config.AMDiumConfig;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
@@ -26,24 +27,19 @@ public class FSRProcessor {
     private static int quadVBO = -1;
     private static boolean quadInitialized = false;
     
-    // Shader programs for different FSR versions
+    // Maximum texture size supported by the GPU
+    private static int maxTextureSize = -1;
+    
+    // Shader programs for FSR 1.0
     private int fsr1ShaderProgram;
-    private int fsr2ShaderProgram;
-    private int upscaleShaderProgram;
-    private int rcasShaderProgram;
-    private int frameGenShaderProgram;
     
     private int inputFramebuffer;
     private int upscaledFramebuffer;
     private int outputFramebuffer;
-    private int historyFramebuffer;
-    private int motionVectorFramebuffer;
     
     private int inputTexture;
     private int upscaledTexture;
     private int outputTexture;
-    private int historyTexture;
-    private int motionVectorTexture;
     private int depthTexture;
     
     private int displayWidth;
@@ -51,201 +47,326 @@ public class FSRProcessor {
     private int renderWidth;
     private int renderHeight;
     
-    private long lastFrameTime;
-    private float frameTime;
-    
     private boolean initialized = false;
     private boolean shadersCompiled = false;
     
-    public void initialize() {
+    // FSR quality settings
+    private float sharpness = 0.8f; // Default sharpness value
+    
+    // Error tracking
+    private int consecutiveErrors = 0;
+    private static final int MAX_CONSECUTIVE_ERRORS = 5;
+    
+    /**
+     * Get the maximum texture size supported by the GPU
+     */
+    private int getMaxTextureSize() {
+        if (maxTextureSize == -1) {
+            maxTextureSize = GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE);
+            AMDium.LOGGER.info("Maximum texture size: " + maxTextureSize);
+        }
+        return maxTextureSize;
+    }
+    
+    /**
+     * Validate texture dimensions to ensure they're within GPU limits
+     */
+    private boolean validateTextureDimensions(int width, int height) {
+        int maxSize = getMaxTextureSize();
+        if (width <= 0 || height <= 0) {
+            AMDium.LOGGER.error("Invalid texture dimensions: " + width + "x" + height);
+            return false;
+        }
+        if (width > maxSize || height > maxSize) {
+            AMDium.LOGGER.error("Texture dimensions exceed maximum size: " + width + "x" + height + " > " + maxSize);
+            return false;
+        }
+        return true;
+    }
+    
+    /**
+     * Create a texture with validation and error handling
+     */
+    private int createTexture(int width, int height, int internalFormat, int format, int type) {
+        if (!validateTextureDimensions(width, height)) {
+            return 0;
+        }
+        
+        int texture = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        
         try {
-            // Set default dimensions to avoid null pointer exceptions
-            if (displayWidth == 0 || displayHeight == 0) {
-                // Get the current Minecraft window size if possible
-                try {
-                    MinecraftClient client = MinecraftClient.getInstance();
-                    if (client != null && client.getWindow() != null) {
-                        displayWidth = client.getWindow().getFramebufferWidth();
-                        displayHeight = client.getWindow().getFramebufferHeight();
-                    } else {
-                        // Fallback to default values
-                        displayWidth = 1920;  // Default width
-                        displayHeight = 1080; // Default height
-                    }
-                } catch (Exception e) {
-                    // Fallback to default values
-                    displayWidth = 1920;  // Default width
-                    displayHeight = 1080; // Default height
-                    AMDium.LOGGER.warn("Could not get window size, using defaults", e);
-                }
-                
-                AMDiumConfig config = AMDium.getInstance().getConfig();
-                FSRQualityMode qualityMode = config.getQualityMode();
-                renderWidth = qualityMode.calculateRenderWidth(displayWidth);
-                renderHeight = qualityMode.calculateRenderHeight(displayHeight);
-                
-                AMDium.LOGGER.info("Initialized FSR with dimensions: " + renderWidth + "x" + renderHeight + 
-                                  " -> " + displayWidth + "x" + displayHeight);
+            // Allocate texture storage
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, (ByteBuffer) null);
+            
+            // Set texture parameters for FSR
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+            
+            // Check for OpenGL errors
+            int error = GL11.glGetError();
+            if (error != GL11.GL_NO_ERROR) {
+                AMDium.LOGGER.error("OpenGL error creating texture: " + error);
+                GL11.glDeleteTextures(texture);
+                return 0;
             }
             
+            AMDium.LOGGER.debug("Created texture " + texture + " with dimensions " + width + "x" + height);
+            return texture;
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Failed to create texture", e);
+            GL11.glDeleteTextures(texture);
+            return 0;
+        } finally {
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        }
+    }
+    
+    public void initialize() {
+        if (initialized) {
+            AMDium.LOGGER.warn("FSR Processor already initialized");
+            return;
+        }
+        
+        try {
+            AMDium.LOGGER.info("Initializing FSR Processor");
+            
+            // Get display and render dimensions
+            MinecraftClient mc = MinecraftClient.getInstance();
+            displayWidth = mc.getWindow().getWidth();
+            displayHeight = mc.getWindow().getHeight();
+            
+            // Calculate render dimensions based on scaling factor
+            float scalingFactor = AMDium.getInstance().getConfig().getScalingFactor();
+            renderWidth = Math.round(displayWidth * scalingFactor);
+            renderHeight = Math.round(displayHeight * scalingFactor);
+            
+            AMDium.LOGGER.info("FSR dimensions: " + renderWidth + "x" + renderHeight + 
+                              " -> " + displayWidth + "x" + displayHeight);
+            
+            // Validate dimensions
+            if (!validateTextureDimensions(renderWidth, renderHeight) || 
+                !validateTextureDimensions(displayWidth, displayHeight)) {
+                AMDium.LOGGER.error("Invalid dimensions for FSR");
+                return;
+            }
+            
+            // Initialize fullscreen quad if needed
+            if (!quadInitialized) {
+                initializeQuad();
+            }
+            
+            // Compile shaders
             if (!shadersCompiled) {
-                compileShaders();
-                shadersCompiled = true;
+                try {
+                    compileShaders();
+                } catch (Exception e) {
+                    AMDium.LOGGER.error("Failed to compile FSR shaders", e);
+                    return;
+                }
             }
             
-            // Create framebuffers with the current dimensions
-            createFramebuffers();
-            
-            // Verify that the framebuffers were created successfully
-            boolean framebuffersValid = verifyFramebuffers();
-            if (!framebuffersValid) {
-                throw new RuntimeException("Failed to create valid framebuffers");
+            // Create framebuffers and textures
+            try {
+                createFramebuffers();
+            } catch (Exception e) {
+                AMDium.LOGGER.error("Failed to create FSR framebuffers", e);
+                cleanup(); // Clean up any partially created resources
+                return;
             }
+            
+            // Verify framebuffers are complete
+            if (!verifyFramebuffers()) {
+                AMDium.LOGGER.error("FSR framebuffers verification failed");
+                cleanup();
+                return;
+            }
+            
+            // Set initial sharpness from config
+            sharpness = AMDium.getInstance().getConfig().getSharpness();
             
             initialized = true;
-            AMDium.LOGGER.info("FSR processor initialized with dimensions: " + renderWidth + "x" + renderHeight + 
-                              " -> " + displayWidth + "x" + displayHeight);
+            AMDium.LOGGER.info("FSR Processor initialized successfully");
         } catch (Exception e) {
-            AMDium.LOGGER.error("Failed to initialize FSR processor", e);
-            // Reset to default framebuffer to prevent black screen
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-            throw new RuntimeException("FSR initialization failed", e);
+            AMDium.LOGGER.error("Failed to initialize FSR Processor", e);
+            cleanup(); // Clean up any partially created resources
         }
     }
     
     public void cleanup() {
         if (!initialized) return;
         
-        GL20.glDeleteProgram(fsr1ShaderProgram);
-        GL20.glDeleteProgram(fsr2ShaderProgram);
-        GL20.glDeleteProgram(upscaleShaderProgram);
-        GL20.glDeleteProgram(rcasShaderProgram);
-        GL20.glDeleteProgram(frameGenShaderProgram);
-        
-        GL30.glDeleteFramebuffers(inputFramebuffer);
-        GL30.glDeleteFramebuffers(upscaledFramebuffer);
-        GL30.glDeleteFramebuffers(outputFramebuffer);
-        GL30.glDeleteFramebuffers(historyFramebuffer);
-        GL30.glDeleteFramebuffers(motionVectorFramebuffer);
-        
-        GL11.glDeleteTextures(inputTexture);
-        GL11.glDeleteTextures(upscaledTexture);
-        GL11.glDeleteTextures(outputTexture);
-        GL11.glDeleteTextures(historyTexture);
-        GL11.glDeleteTextures(motionVectorTexture);
-        GL11.glDeleteTextures(depthTexture);
-        
-        initialized = false;
-        // Don't reset shadersCompiled flag - we don't need to recompile shaders
+        try {
+            // Make sure we're not in the middle of rendering
+            GL30.glFinish();
+            
+            // Delete shader programs if they exist
+            if (fsr1ShaderProgram > 0) {
+                GL20.glDeleteProgram(fsr1ShaderProgram);
+                fsr1ShaderProgram = 0;
+            }
+            
+            // Delete framebuffers if they exist
+            deleteFramebuffer(inputFramebuffer);
+            deleteFramebuffer(upscaledFramebuffer);
+            deleteFramebuffer(outputFramebuffer);
+            deleteFramebuffer(depthTexture);
+            
+            // Delete textures if they exist
+            deleteTexture(inputTexture);
+            deleteTexture(upscaledTexture);
+            deleteTexture(outputTexture);
+            deleteTexture(depthTexture);
+            
+            // Reset to default framebuffer
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            
+            // Reset state
+            initialized = false;
+            
+            AMDium.LOGGER.info("FSR processor cleaned up successfully");
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error during FSR processor cleanup", e);
+            // Make sure we're on the default framebuffer even if cleanup fails
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        }
+    }
+    
+    private void deleteFramebuffer(int framebuffer) {
+        if (framebuffer > 0 && GL30.glIsFramebuffer(framebuffer)) {
+            GL30.glDeleteFramebuffers(framebuffer);
+        }
+    }
+    
+    private void deleteTexture(int texture) {
+        if (texture > 0 && GL11.glIsTexture(texture)) {
+            GL11.glDeleteTextures(texture);
+        }
     }
     
     public void resizeBuffers(int width, int height) {
         if (!initialized) return;
         
-        AMDiumConfig config = AMDium.getInstance().getConfig();
-        FSRQualityMode qualityMode = config.getQualityMode();
-        
-        displayWidth = width;
-        displayHeight = height;
-        renderWidth = qualityMode.calculateRenderWidth(width);
-        renderHeight = qualityMode.calculateRenderHeight(height);
-        
-        // Delete old framebuffers
-        GL30.glDeleteFramebuffers(inputFramebuffer);
-        GL30.glDeleteFramebuffers(upscaledFramebuffer);
-        GL30.glDeleteFramebuffers(outputFramebuffer);
-        GL30.glDeleteFramebuffers(historyFramebuffer);
-        GL30.glDeleteFramebuffers(motionVectorFramebuffer);
-        
-        GL11.glDeleteTextures(inputTexture);
-        GL11.glDeleteTextures(upscaledTexture);
-        GL11.glDeleteTextures(outputTexture);
-        GL11.glDeleteTextures(historyTexture);
-        GL11.glDeleteTextures(motionVectorTexture);
-        GL11.glDeleteTextures(depthTexture);
-        
-        // Create new framebuffers with the new size
-        createFramebuffers();
-        
-        // No need to recompile shaders here - they don't depend on size
-        AMDium.LOGGER.info("FSR buffers resized to " + renderWidth + "x" + renderHeight + " -> " + displayWidth + "x" + displayHeight);
+        try {
+            AMDiumConfig config = AMDium.getInstance().getConfig();
+            FSRQualityMode qualityMode = config.getQualityMode();
+            
+            // Store old values to check if we actually need to resize
+            int oldDisplayWidth = displayWidth;
+            int oldDisplayHeight = displayHeight;
+            int oldRenderWidth = renderWidth;
+            int oldRenderHeight = renderHeight;
+            
+            // Calculate new dimensions
+            displayWidth = width;
+            displayHeight = height;
+            renderWidth = qualityMode.calculateRenderWidth(width);
+            renderHeight = qualityMode.calculateRenderHeight(height);
+            
+            // Only recreate framebuffers if dimensions have actually changed
+            if (oldDisplayWidth != displayWidth || oldDisplayHeight != displayHeight ||
+                oldRenderWidth != renderWidth || oldRenderHeight != renderHeight) {
+                
+                // Delete old framebuffers and textures
+                deleteFramebuffer(inputFramebuffer);
+                deleteFramebuffer(upscaledFramebuffer);
+                deleteFramebuffer(outputFramebuffer);
+                deleteFramebuffer(depthTexture);
+                
+                deleteTexture(inputTexture);
+                deleteTexture(upscaledTexture);
+                deleteTexture(outputTexture);
+                deleteTexture(depthTexture);
+                
+                // Reset framebuffer and texture IDs
+                inputFramebuffer = 0;
+                upscaledFramebuffer = 0;
+                outputFramebuffer = 0;
+                depthTexture = 0;
+                
+                inputTexture = 0;
+                upscaledTexture = 0;
+                outputTexture = 0;
+                depthTexture = 0;
+                
+                // Create new framebuffers with the new size
+                createFramebuffers();
+                
+                AMDium.LOGGER.info("FSR buffers resized to " + renderWidth + "x" + renderHeight + 
+                                  " -> " + displayWidth + "x" + displayHeight);
+            }
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error resizing FSR buffers", e);
+            // Reset to default framebuffer if there's an error
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        }
     }
     
     private void createFramebuffers() {
-        // Input framebuffer (low resolution)
-        inputFramebuffer = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, inputFramebuffer);
-        
-        inputTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, inputTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RGBA16F, renderWidth, renderHeight, 0, GL11.GL_RGBA, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, inputTexture, 0);
-        
-        depthTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_DEPTH_COMPONENT24, renderWidth, renderHeight, 0, GL11.GL_DEPTH_COMPONENT, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_DEPTH_ATTACHMENT, GL11.GL_TEXTURE_2D, depthTexture, 0);
-        
-        checkFramebufferStatus("Input framebuffer");
-        
-        // Upscaled framebuffer (high resolution)
-        upscaledFramebuffer = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, upscaledFramebuffer);
-        
-        upscaledTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, upscaledTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RGBA16F, displayWidth, displayHeight, 0, GL11.GL_RGBA, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, upscaledTexture, 0);
-        
-        checkFramebufferStatus("Upscaled framebuffer");
-        
-        // Output framebuffer (final result)
-        outputFramebuffer = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer);
-        
-        outputTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, outputTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RGBA16F, displayWidth, displayHeight, 0, GL11.GL_RGBA, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, outputTexture, 0);
-        
-        checkFramebufferStatus("Output framebuffer");
-        
-        // History framebuffer (for frame generation)
-        historyFramebuffer = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, historyFramebuffer);
-        
-        historyTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, historyTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RGBA16F, displayWidth, displayHeight, 0, GL11.GL_RGBA, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, historyTexture, 0);
-        
-        checkFramebufferStatus("History framebuffer");
-        
-        // Motion vector framebuffer
-        motionVectorFramebuffer = GL30.glGenFramebuffers();
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, motionVectorFramebuffer);
-        
-        motionVectorTexture = GL11.glGenTextures();
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, motionVectorTexture);
-        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_RG16F, renderWidth, renderHeight, 0, GL30.GL_RG, GL11.GL_FLOAT, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, motionVectorTexture, 0);
-        
-        checkFramebufferStatus("Motion vector framebuffer");
-        
-        // Reset to default framebuffer
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        try {
+            // Make sure dimensions are valid
+            if (!validateTextureDimensions(renderWidth, renderHeight) || 
+                !validateTextureDimensions(displayWidth, displayHeight)) {
+                throw new IllegalStateException("Invalid framebuffer dimensions: " + 
+                                              renderWidth + "x" + renderHeight + " -> " + 
+                                              displayWidth + "x" + displayHeight);
+            }
+            
+            // Input framebuffer (low resolution)
+            inputFramebuffer = GL30.glGenFramebuffers();
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, inputFramebuffer);
+            
+            inputTexture = createTexture(renderWidth, renderHeight, GL30.GL_RGBA16F, GL11.GL_RGBA, GL11.GL_FLOAT);
+            if (inputTexture == 0) {
+                throw new RuntimeException("Failed to create input texture");
+            }
+            GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, inputTexture, 0);
+            
+            depthTexture = createTexture(renderWidth, renderHeight, GL30.GL_DEPTH_COMPONENT24, GL11.GL_DEPTH_COMPONENT, GL11.GL_FLOAT);
+            if (depthTexture == 0) {
+                throw new RuntimeException("Failed to create depth texture");
+            }
+            GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_DEPTH_ATTACHMENT, GL11.GL_TEXTURE_2D, depthTexture, 0);
+            
+            checkFramebufferStatus("Input framebuffer");
+            
+            // Upscaled framebuffer (high resolution)
+            upscaledFramebuffer = GL30.glGenFramebuffers();
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, upscaledFramebuffer);
+            
+            upscaledTexture = createTexture(displayWidth, displayHeight, GL30.GL_RGBA16F, GL11.GL_RGBA, GL11.GL_FLOAT);
+            if (upscaledTexture == 0) {
+                throw new RuntimeException("Failed to create upscaled texture");
+            }
+            GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, upscaledTexture, 0);
+            
+            checkFramebufferStatus("Upscaled framebuffer");
+            
+            // Output framebuffer (final result)
+            outputFramebuffer = GL30.glGenFramebuffers();
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer);
+            
+            outputTexture = createTexture(displayWidth, displayHeight, GL30.GL_RGBA16F, GL11.GL_RGBA, GL11.GL_FLOAT);
+            if (outputTexture == 0) {
+                throw new RuntimeException("Failed to create output texture");
+            }
+            GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, outputTexture, 0);
+            
+            checkFramebufferStatus("Output framebuffer");
+            
+            // Reset to default framebuffer
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error creating framebuffers", e);
+            // Clean up any resources that were created
+            cleanup();
+            // Reset to default framebuffer
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            throw e;
+        }
     }
     
     private void checkFramebufferStatus(String framebufferName) {
@@ -271,41 +392,74 @@ public class FSRProcessor {
     }
     
     private void compileShaders() throws IOException {
-        // Prioritize loading FSR 1.0 shaders first since it's the default
-        fsr1ShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr1.vert", "/assets/amdium/shaders/fsr1.frag");
-        AMDium.LOGGER.info("FSR 1.0 shaders compiled successfully");
-        
-        // Load other shaders
+        // Load only the basic FSR 1.0 shader with enhanced error handling
         try {
-            fsr2ShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr2.vert", "/assets/amdium/shaders/fsr2.frag");
-            upscaleShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr_easu.vert", "/assets/amdium/shaders/fsr_easu.frag");
-            rcasShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr_rcas.vert", "/assets/amdium/shaders/fsr_rcas.frag");
-            frameGenShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr_framegen.vert", "/assets/amdium/shaders/fsr_framegen.frag");
-            AMDium.LOGGER.info("All FSR shaders compiled successfully");
+            // Load basic FSR 1.0 shader (combined upscaling and sharpening)
+            fsr1ShaderProgram = createShaderProgram("/assets/amdium/shaders/fsr1.vert", "/assets/amdium/shaders/fsr1.frag");
+            AMDium.LOGGER.info("FSR 1.0 basic shader compiled successfully");
+            
+            shadersCompiled = true;
         } catch (Exception e) {
-            AMDium.LOGGER.warn("Some advanced FSR shaders failed to compile, falling back to FSR 1.0", e);
-            // If advanced shaders fail, we can still use FSR 1.0
+            AMDium.LOGGER.error("Failed to compile FSR 1.0 shader", e);
+            throw new IOException("Failed to compile FSR shader", e);
         }
     }
     
     private int createShaderProgram(String vertexPath, String fragmentPath) throws IOException {
-        int vertexShader = loadShader(vertexPath, GL20.GL_VERTEX_SHADER);
-        int fragmentShader = loadShader(fragmentPath, GL20.GL_FRAGMENT_SHADER);
+        int vertexShader = 0;
+        int fragmentShader = 0;
+        int program = 0;
         
-        int program = GL20.glCreateProgram();
-        GL20.glAttachShader(program, vertexShader);
-        GL20.glAttachShader(program, fragmentShader);
-        GL20.glLinkProgram(program);
-        
-        if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-            String log = GL20.glGetProgramInfoLog(program);
-            throw new RuntimeException("Failed to link shader program: " + log);
+        try {
+            // Load and compile vertex shader
+            vertexShader = loadShader(vertexPath, GL20.GL_VERTEX_SHADER);
+            
+            // Load and compile fragment shader
+            fragmentShader = loadShader(fragmentPath, GL20.GL_FRAGMENT_SHADER);
+            
+            // Create and link program
+            program = GL20.glCreateProgram();
+            GL20.glAttachShader(program, vertexShader);
+            GL20.glAttachShader(program, fragmentShader);
+            GL20.glLinkProgram(program);
+            
+            // Check for linking errors
+            if (GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
+                String log = GL20.glGetProgramInfoLog(program);
+                throw new RuntimeException("Failed to link shader program: " + log);
+            }
+            
+            // Validate program
+            GL20.glValidateProgram(program);
+            if (GL20.glGetProgrami(program, GL20.GL_VALIDATE_STATUS) == GL11.GL_FALSE) {
+                String log = GL20.glGetProgramInfoLog(program);
+                AMDium.LOGGER.warn("Shader program validation warning: " + log);
+                // Continue despite validation warning, as it might still work
+            }
+            
+            return program;
+        } catch (Exception e) {
+            // Clean up resources on error
+            if (vertexShader > 0) {
+                GL20.glDeleteShader(vertexShader);
+            }
+            if (fragmentShader > 0) {
+                GL20.glDeleteShader(fragmentShader);
+            }
+            if (program > 0) {
+                GL20.glDeleteProgram(program);
+            }
+            
+            throw new IOException("Failed to create shader program: " + e.getMessage(), e);
+        } finally {
+            // Always delete shaders after linking
+            if (vertexShader > 0) {
+                GL20.glDeleteShader(vertexShader);
+            }
+            if (fragmentShader > 0) {
+                GL20.glDeleteShader(fragmentShader);
+            }
         }
-        
-        GL20.glDeleteShader(vertexShader);
-        GL20.glDeleteShader(fragmentShader);
-        
-        return program;
     }
     
     private int loadShader(String path, int type) throws IOException {
@@ -320,15 +474,135 @@ public class FSRProcessor {
         }
         
         int shader = GL20.glCreateShader(type);
-        GL20.glShaderSource(shader, source);
-        GL20.glCompileShader(shader);
-        
-        if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            String log = GL20.glGetShaderInfoLog(shader);
-            throw new RuntimeException("Failed to compile shader: " + log);
+        try {
+            GL20.glShaderSource(shader, source);
+            GL20.glCompileShader(shader);
+            
+            if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
+                String log = GL20.glGetShaderInfoLog(shader);
+                throw new RuntimeException("Failed to compile shader: " + log);
+            }
+            
+            return shader;
+        } catch (Exception e) {
+            GL20.glDeleteShader(shader);
+            throw new IOException("Failed to compile shader: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Validates if a framebuffer is complete and ready for use
+     * @param framebuffer The framebuffer ID to check
+     * @return True if the framebuffer is valid and complete
+     */
+    private boolean validateFramebuffer(int framebuffer) {
+        if (framebuffer <= 0) {
+            AMDium.LOGGER.error("Invalid framebuffer ID: " + framebuffer);
+            return false;
         }
         
-        return shader;
+        try {
+            // Save current framebuffer binding
+            int[] currentFbo = new int[1];
+            GL11.glGetIntegerv(GL30.GL_FRAMEBUFFER_BINDING, currentFbo);
+            
+            // Bind and check the framebuffer
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebuffer);
+            int status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER);
+            
+            // Restore previous framebuffer binding
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, currentFbo[0]);
+            
+            if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
+                String errorMsg = "Framebuffer " + framebuffer + " is incomplete: ";
+                switch (status) {
+                    case GL30.GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+                        errorMsg += "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
+                        break;
+                    case GL30.GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
+                        errorMsg += "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
+                        break;
+                    case GL30.GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER:
+                        errorMsg += "GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER";
+                        break;
+                    case GL30.GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER:
+                        errorMsg += "GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER";
+                        break;
+                    case GL30.GL_FRAMEBUFFER_UNSUPPORTED:
+                        errorMsg += "GL_FRAMEBUFFER_UNSUPPORTED";
+                        break;
+                    default:
+                        errorMsg += "Unknown error code: " + status;
+                }
+                AMDium.LOGGER.error(errorMsg);
+                return false;
+            }
+            
+            return true;
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error validating framebuffer " + framebuffer, e);
+            return false;
+        }
+    }
+    
+    /**
+     * Safely bind a framebuffer for reading or drawing
+     * @param target GL_READ_FRAMEBUFFER or GL_DRAW_FRAMEBUFFER
+     * @param framebuffer The framebuffer ID to bind
+     * @return True if binding was successful
+     */
+    private boolean safeBindFramebuffer(int target, int framebuffer) {
+        try {
+            // Default framebuffer (0) is always valid
+            if (framebuffer == 0) {
+                GL30.glBindFramebuffer(target, 0);
+                return true;
+            }
+            
+            // For other framebuffers, validate first
+            if (validateFramebuffer(framebuffer)) {
+                GL30.glBindFramebuffer(target, framebuffer);
+                return true;
+            } else {
+                AMDium.LOGGER.error("Failed to bind invalid framebuffer: " + framebuffer);
+                // Bind default framebuffer as fallback
+                GL30.glBindFramebuffer(target, 0);
+                return false;
+            }
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error binding framebuffer " + framebuffer, e);
+            // Bind default framebuffer as fallback
+            GL30.glBindFramebuffer(target, 0);
+            return false;
+        }
+    }
+    
+    /**
+     * Safely perform a framebuffer blit operation with validation
+     */
+    private void safeBlitFramebuffer(int srcX0, int srcY0, int srcX1, int srcY1, 
+                                    int dstX0, int dstY0, int dstX1, int dstY1,
+                                    int mask, int filter) {
+        try {
+            // Validate source dimensions
+            if (srcX0 < 0 || srcY0 < 0 || srcX1 <= srcX0 || srcY1 <= srcY0) {
+                AMDium.LOGGER.error("Invalid source dimensions for blit: " + 
+                                   srcX0 + "," + srcY0 + " -> " + srcX1 + "," + srcY1);
+                return;
+            }
+            
+            // Validate destination dimensions
+            if (dstX0 < 0 || dstY0 < 0 || dstX1 <= dstX0 || dstY1 <= dstY0) {
+                AMDium.LOGGER.error("Invalid destination dimensions for blit: " + 
+                                   dstX0 + "," + dstY0 + " -> " + dstX1 + "," + dstY1);
+                return;
+            }
+            
+            // Perform the blit
+            GL30.glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error in blitFramebuffer", e);
+        }
     }
     
     public void processFrame(int sourceFramebuffer, long currentTime) {
@@ -338,89 +612,93 @@ public class FSRProcessor {
             AMDiumConfig config = AMDium.getInstance().getConfig();
             FSRType fsrType = config.getFsrType();
             
-            // Calculate frame time for motion estimation
-            if (lastFrameTime == 0) {
-                lastFrameTime = currentTime;
-                frameTime = 0.016f; // Default to 60 FPS
-            } else {
-                frameTime = (currentTime - lastFrameTime) / 1000.0f;
-                lastFrameTime = currentTime;
+            // Update sharpness from config
+            sharpness = config.getSharpness();
+            
+            // Validate source framebuffer
+            if (sourceFramebuffer <= 0) {
+                AMDium.LOGGER.error("Invalid source framebuffer: " + sourceFramebuffer);
+                directRender(0); // Use default framebuffer as source
+                return;
+            }
+            
+            // Make sure dimensions are valid
+            if (renderWidth <= 0 || renderHeight <= 0 || displayWidth <= 0 || displayHeight <= 0) {
+                AMDium.LOGGER.error("Invalid render dimensions: " + renderWidth + "x" + renderHeight + 
+                                   " -> " + displayWidth + "x" + displayHeight);
+                directRender(sourceFramebuffer);
+                return;
             }
             
             // Bind input framebuffer and copy from source
-            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, sourceFramebuffer);
-            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, inputFramebuffer);
+            if (!safeBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, sourceFramebuffer)) {
+                directRender(0);
+                return;
+            }
             
-            // Check if source framebuffer is valid (sourceFramebuffer > 0)
-            if (sourceFramebuffer > 0) {
-                // Use a direct blit operation with proper dimensions
-                GL30.glBlitFramebuffer(
-                    0, 0, renderWidth, renderHeight,
-                    0, 0, renderWidth, renderHeight,
-                    GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, GL11.GL_NEAREST
-                );
+            if (!safeBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, inputFramebuffer)) {
+                directRender(sourceFramebuffer);
+                return;
+            }
+            
+            // Use a direct blit operation with proper dimensions
+            safeBlitFramebuffer(
+                0, 0, renderWidth, renderHeight,
+                0, 0, renderWidth, renderHeight,
+                GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, GL11.GL_NEAREST
+            );
+            
+            // Process with enhanced FSR 1.0
+            boolean success = false;
+            try {
+                processFSR1Enhanced();
+                success = true;
+                consecutiveErrors = 0; // Reset error counter on success
+            } catch (Exception e) {
+                consecutiveErrors++;
+                AMDium.LOGGER.error("Error processing with FSR 1.0 (attempt " + consecutiveErrors + ")", e);
                 
-                // Process based on FSR type
-                boolean success = false;
-                try {
-                    switch (fsrType) {
-                        case FSR_1:
-                            processFSR1();
-                            success = true;
-                            break;
-                        case FSR_2:
-                            processFSR2();
-                            success = true;
-                            break;
-                        case FSR_3:
-                            processFSR3(config);
-                            success = true;
-                            break;
-                        default:
-                            // Default to FSR 1.0 if something goes wrong
-                            processFSR1();
-                            success = true;
-                            break;
-                    }
-                } catch (Exception e) {
-                    AMDium.LOGGER.error("Error processing frame with " + fsrType + ", falling back to FSR 1.0", e);
+                // Reset OpenGL state before trying fallback
+                GL20.glUseProgram(0);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                safeBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+                
+                // If we've had too many consecutive errors, disable FSR temporarily
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    AMDium.LOGGER.error("Too many consecutive FSR errors, disabling FSR temporarily");
+                    success = false;
+                } else {
+                    // Try simple fallback
                     try {
-                        processFSR1();
+                        copyInputToOutput();
                         success = true;
                     } catch (Exception fallbackError) {
-                        AMDium.LOGGER.error("Critical error in FSR processing", fallbackError);
-                        // If even FSR 1.0 fails, copy the input directly to the output
+                        AMDium.LOGGER.error("Simple fallback failed", fallbackError);
                         success = false;
                     }
                 }
-                
-                // If all FSR methods failed, use direct rendering as a last resort
-                if (!success) {
-                    directRender(sourceFramebuffer);
-                }
-            } else {
-                AMDium.LOGGER.error("Invalid source framebuffer: " + sourceFramebuffer);
-                // Use direct rendering as a fallback
-                directRender(0); // Use default framebuffer as source
             }
-        } catch (Exception e) {
-            AMDium.LOGGER.error("Unhandled exception in FSR processing", e);
-            // Reset to default framebuffer to prevent black screen
+            
+            if (!success) {
+                // If all FSR processing failed, use direct rendering
+                directRender(sourceFramebuffer);
+            }
+            
+            // Reset OpenGL state
+            GL20.glUseProgram(0);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-            // Try direct rendering as a last resort
-            try {
-                directRender(0);
-            } catch (Exception ex) {
-                // At this point, we've tried everything - just make sure we're on the default framebuffer
-                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-            }
+            
+        } catch (Exception e) {
+            // Unhandled exception - make sure we bind the default framebuffer to prevent black screen
+            AMDium.LOGGER.error("Unhandled exception in processFrame", e);
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            
+            // Report error to AMDium
+            AMDium.getInstance().reportError();
         }
     }
     
-    /**
-     * Direct rendering fallback that bypasses FSR completely
-     * This is used as a last resort when FSR processing fails
-     */
     private void directRender(int sourceFramebuffer) {
         try {
             // If source is 0, we're already on the default framebuffer
@@ -428,7 +706,12 @@ public class FSRProcessor {
                 // Copy directly from source to default framebuffer
                 GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, sourceFramebuffer);
                 GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0);
-                GL30.glBlitFramebuffer(
+                
+                // Clear the default framebuffer
+                GL11.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+                
+                safeBlitFramebuffer(
                     0, 0, renderWidth, renderHeight,
                     0, 0, displayWidth, displayHeight,
                     GL11.GL_COLOR_BUFFER_BIT, GL11.GL_LINEAR
@@ -453,10 +736,15 @@ public class FSRProcessor {
         }
     }
     
-    private void processFSR1() {
+    /**
+     * Enhanced FSR 1.0 implementation - simplified to avoid OpenGL errors
+     */
+    private void processFSR1Enhanced() {
         try {
             // Simple FSR 1.0 implementation (basic upscaling)
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer);
+            if (!safeBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer)) {
+                throw new RuntimeException("Failed to bind output framebuffer");
+            }
             
             // Clear the framebuffer to prevent artifacts
             GL11.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -472,6 +760,118 @@ public class FSRProcessor {
             int inputSizeLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "inputSize");
             int outputSizeLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "outputSize");
             int inputTexLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "inputTexture");
+            int sharpnessLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "sharpness");
+        
+        if (inputSizeLoc != -1) {
+            GL20.glUniform2f(inputSizeLoc, renderWidth, renderHeight);
+        }
+        
+        if (outputSizeLoc != -1) {
+            GL20.glUniform2f(outputSizeLoc, displayWidth, displayHeight);
+        }
+            
+            if (sharpnessLoc != -1) {
+                GL20.glUniform1f(sharpnessLoc, sharpness);
+            }
+        
+        // Bind input texture
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, inputTexture);
+        
+        if (inputTexLoc != -1) {
+            GL20.glUniform1i(inputTexLoc, 0);
+        }
+        
+            // Render the fullscreen quad
+            try {
+                // Use the static quad if available
+                if (!quadInitialized) {
+                    initializeQuad();
+                }
+                
+                if (quadInitialized && quadVAO > 0) {
+                    // Bind the VAO and draw
+                    GL30.glBindVertexArray(quadVAO);
+                    GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+                    GL30.glBindVertexArray(0);
+                } else {
+                    // Fallback to immediate mode rendering
+                    GL11.glBegin(GL11.GL_TRIANGLE_STRIP);
+                    GL11.glTexCoord2f(0.0f, 0.0f); GL11.glVertex3f(-1.0f, -1.0f, 0.0f);
+                    GL11.glTexCoord2f(1.0f, 0.0f); GL11.glVertex3f(1.0f, -1.0f, 0.0f);
+                    GL11.glTexCoord2f(0.0f, 1.0f); GL11.glVertex3f(-1.0f, 1.0f, 0.0f);
+                    GL11.glTexCoord2f(1.0f, 1.0f); GL11.glVertex3f(1.0f, 1.0f, 0.0f);
+                    GL11.glEnd();
+                }
+            } catch (Exception e) {
+                AMDium.LOGGER.error("Error rendering quad, using fallback", e);
+                // Ultimate fallback
+                GL11.glBegin(GL11.GL_TRIANGLE_STRIP);
+                GL11.glTexCoord2f(0.0f, 0.0f); GL11.glVertex3f(-1.0f, -1.0f, 0.0f);
+                GL11.glTexCoord2f(1.0f, 0.0f); GL11.glVertex3f(1.0f, -1.0f, 0.0f);
+                GL11.glTexCoord2f(0.0f, 1.0f); GL11.glVertex3f(-1.0f, 1.0f, 0.0f);
+                GL11.glTexCoord2f(1.0f, 1.0f); GL11.glVertex3f(1.0f, 1.0f, 0.0f);
+                GL11.glEnd();
+        }
+        
+        // Copy to default framebuffer
+        if (!safeBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, outputFramebuffer)) {
+            throw new RuntimeException("Failed to bind output framebuffer for reading");
+        }
+        
+        if (!safeBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0)) {
+            throw new RuntimeException("Failed to bind default framebuffer for drawing");
+        }
+        
+        // Clear the default framebuffer
+        GL11.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        
+        // Blit the output to the default framebuffer
+        safeBlitFramebuffer(
+            0, 0, displayWidth, displayHeight,
+            0, 0, displayWidth, displayHeight,
+            GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST
+        );
+        
+        // Reset state
+        GL20.glUseProgram(0);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        
+        // Log success for debugging
+        AMDium.LOGGER.debug("Enhanced FSR1 processing completed successfully");
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error in processFSR1Enhanced", e);
+            throw e; // Rethrow to be handled by the caller
+        }
+    }
+    
+    /**
+     * Simple FSR 1.0 implementation (basic upscaling) - kept as a fallback
+     */
+    private void processFSR1() {
+        try {
+            // Simple FSR 1.0 implementation (basic upscaling)
+            if (!safeBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer)) {
+                directRender(0);
+                return;
+            }
+            
+            // Clear the framebuffer to prevent artifacts
+            GL11.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+            
+            // Set viewport to match output dimensions
+            GL11.glViewport(0, 0, displayWidth, displayHeight);
+            
+            // Use the FSR 1.0 shader program
+            GL20.glUseProgram(fsr1ShaderProgram);
+            
+            // Set uniforms
+            int inputSizeLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "inputSize");
+            int outputSizeLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "outputSize");
+            int inputTexLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "inputTexture");
+            int sharpnessLoc = GL20.glGetUniformLocation(fsr1ShaderProgram, "sharpness");
             
             if (inputSizeLoc != -1) {
                 GL20.glUniform2f(inputSizeLoc, renderWidth, renderHeight);
@@ -479,6 +879,10 @@ public class FSRProcessor {
             
             if (outputSizeLoc != -1) {
                 GL20.glUniform2f(outputSizeLoc, displayWidth, displayHeight);
+            }
+            
+            if (sharpnessLoc != -1) {
+                GL20.glUniform1f(sharpnessLoc, sharpness);
             }
             
             // Bind input texture
@@ -493,15 +897,21 @@ public class FSRProcessor {
             renderFullscreenQuad();
             
             // Copy to default framebuffer
-            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, outputFramebuffer);
-            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0);
+            if (!safeBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, outputFramebuffer)) {
+                directRender(0);
+                return;
+            }
+            
+            if (!safeBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0)) {
+                return; // This should never fail as 0 is the default framebuffer
+            }
             
             // Clear the default framebuffer
             GL11.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
             
             // Blit the output to the default framebuffer
-            GL30.glBlitFramebuffer(
+            safeBlitFramebuffer(
                 0, 0, displayWidth, displayHeight,
                 0, 0, displayWidth, displayHeight,
                 GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST
@@ -517,103 +927,8 @@ public class FSRProcessor {
             AMDium.LOGGER.error("Error in processFSR1", e);
             // Reset to default framebuffer
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
-            throw e;
-        }
-    }
-    
-    private void processFSR2() {
-        // FSR 2.0 implementation (temporal upscaling)
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, upscaledFramebuffer);
-        GL11.glViewport(0, 0, displayWidth, displayHeight);
-        
-        GL20.glUseProgram(fsr2ShaderProgram);
-        
-        GL20.glUniform2f(GL20.glGetUniformLocation(fsr2ShaderProgram, "inputSize"), renderWidth, renderHeight);
-        GL20.glUniform2f(GL20.glGetUniformLocation(fsr2ShaderProgram, "outputSize"), displayWidth, displayHeight);
-        GL20.glUniform1f(GL20.glGetUniformLocation(fsr2ShaderProgram, "frameTime"), frameTime);
-        
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, inputTexture);
-        GL20.glUniform1i(GL20.glGetUniformLocation(fsr2ShaderProgram, "inputTexture"), 0);
-        
-        GL13.glActiveTexture(GL13.GL_TEXTURE1);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, historyTexture);
-        GL20.glUniform1i(GL20.glGetUniformLocation(fsr2ShaderProgram, "historyTexture"), 1);
-        
-        renderFullscreenQuad();
-        
-        // Copy current frame to history buffer for next frame
-        GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, upscaledFramebuffer);
-        GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, historyFramebuffer);
-        GL30.glBlitFramebuffer(0, 0, displayWidth, displayHeight, 0, 0, displayWidth, displayHeight, GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST);
-        
-        // Copy to default framebuffer
-        GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, upscaledFramebuffer);
-        GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0);
-        GL30.glBlitFramebuffer(0, 0, displayWidth, displayHeight, 0, 0, displayWidth, displayHeight, GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST);
-    }
-    
-    private void processFSR3(AMDiumConfig config) {
-        // Step 1: EASU (Edge Adaptive Spatial Upsampling)
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, upscaledFramebuffer);
-        GL11.glViewport(0, 0, displayWidth, displayHeight);
-        
-        GL20.glUseProgram(upscaleShaderProgram);
-        
-        GL20.glUniform2f(GL20.glGetUniformLocation(upscaleShaderProgram, "inputSize"), renderWidth, renderHeight);
-        GL20.glUniform2f(GL20.glGetUniformLocation(upscaleShaderProgram, "outputSize"), displayWidth, displayHeight);
-        
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, inputTexture);
-        GL20.glUniform1i(GL20.glGetUniformLocation(upscaleShaderProgram, "inputTexture"), 0);
-        
-        renderFullscreenQuad();
-        
-        // Step 2: RCAS (Robust Contrast Adaptive Sharpening)
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer);
-        
-        GL20.glUseProgram(rcasShaderProgram);
-        
-        GL20.glUniform1f(GL20.glGetUniformLocation(rcasShaderProgram, "sharpness"), config.getSharpness());
-        
-        GL13.glActiveTexture(GL13.GL_TEXTURE0);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, upscaledTexture);
-        GL20.glUniform1i(GL20.glGetUniformLocation(rcasShaderProgram, "inputTexture"), 0);
-        
-        renderFullscreenQuad();
-        
-        // Step 3: Frame Generation (if enabled)
-        if (config.isFrameGeneration()) {
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0); // Final output
-            
-            GL20.glUseProgram(frameGenShaderProgram);
-            
-            GL20.glUniform1f(GL20.glGetUniformLocation(frameGenShaderProgram, "frameTime"), frameTime);
-            GL20.glUniform1i(GL20.glGetUniformLocation(frameGenShaderProgram, "strength"), config.getFrameGenerationStrength());
-            
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, outputTexture);
-            GL20.glUniform1i(GL20.glGetUniformLocation(frameGenShaderProgram, "currentFrame"), 0);
-            
-            GL13.glActiveTexture(GL13.GL_TEXTURE1);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, historyTexture);
-            GL20.glUniform1i(GL20.glGetUniformLocation(frameGenShaderProgram, "previousFrame"), 1);
-            
-            GL13.glActiveTexture(GL13.GL_TEXTURE2);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, motionVectorTexture);
-            GL20.glUniform1i(GL20.glGetUniformLocation(frameGenShaderProgram, "motionVectors"), 2);
-            
-            renderFullscreenQuad();
-            
-            // Copy current frame to history buffer for next frame
-            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, outputFramebuffer);
-            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, historyFramebuffer);
-            GL30.glBlitFramebuffer(0, 0, displayWidth, displayHeight, 0, 0, displayWidth, displayHeight, GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST);
-        } else {
-            // If frame generation is disabled, just copy the output to the default framebuffer
-            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, outputFramebuffer);
-            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, 0);
-            GL30.glBlitFramebuffer(0, 0, displayWidth, displayHeight, 0, 0, displayWidth, displayHeight, GL11.GL_COLOR_BUFFER_BIT, GL11.GL_NEAREST);
+            // Try direct rendering as a fallback
+            directRender(0);
         }
     }
     
@@ -624,8 +939,16 @@ public class FSRProcessor {
         if (quadInitialized) return;
         
         try {
+            // Make sure we're not in the middle of rendering
+            GL30.glFinish();
+            
             // Create a VAO for the fullscreen quad
             quadVAO = GL30.glGenVertexArrays();
+            if (quadVAO <= 0) {
+                AMDium.LOGGER.error("Failed to create VAO for fullscreen quad");
+                return;
+            }
+            
             GL30.glBindVertexArray(quadVAO);
             
             // Create a fullscreen quad for rendering
@@ -637,6 +960,13 @@ public class FSRProcessor {
             };
             
             quadVBO = GL15.glGenBuffers();
+            if (quadVBO <= 0) {
+                AMDium.LOGGER.error("Failed to create VBO for fullscreen quad");
+                GL30.glDeleteVertexArrays(quadVAO);
+                quadVAO = -1;
+                return;
+            }
+            
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, quadVBO);
             
             FloatBuffer vertexBuffer = MemoryUtil.memAllocFloat(vertices.length);
@@ -680,33 +1010,65 @@ public class FSRProcessor {
     public static void cleanupQuad() {
         if (!quadInitialized) return;
         
-        if (quadVBO > 0) {
-            GL15.glDeleteBuffers(quadVBO);
-            quadVBO = -1;
+        try {
+            // Make sure we're not in the middle of rendering
+            GL30.glFinish();
+            
+            if (quadVBO > 0) {
+                GL15.glDeleteBuffers(quadVBO);
+                quadVBO = -1;
+            }
+            if (quadVAO > 0) {
+                GL30.glDeleteVertexArrays(quadVAO);
+                quadVAO = -1;
+            }
+            
+            quadInitialized = false;
+            AMDium.LOGGER.info("Static fullscreen quad cleaned up");
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error cleaning up static fullscreen quad", e);
         }
-        if (quadVAO > 0) {
-            GL30.glDeleteVertexArrays(quadVAO);
-            quadVAO = -1;
-        }
-        
-        quadInitialized = false;
-        AMDium.LOGGER.info("Static fullscreen quad cleaned up");
     }
     
     private void renderFullscreenQuad() {
-        // Use the static quad if available
-        if (!quadInitialized) {
-            initializeQuad();
+        try {
+            // Use the static quad if available
+            if (!quadInitialized) {
+                initializeQuad();
+            }
+            
+            if (quadInitialized && quadVAO > 0) {
+                // Bind the VAO and draw
+                GL30.glBindVertexArray(quadVAO);
+                GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+                GL30.glBindVertexArray(0);
+            } else {
+                // Fallback to creating a temporary quad
+                renderTemporaryQuad();
+            }
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error rendering fullscreen quad", e);
+            // Try the fallback method
+            try {
+                renderTemporaryQuad();
+            } catch (Exception fallbackError) {
+                AMDium.LOGGER.error("Critical error: Failed to render even with fallback method", fallbackError);
+            }
         }
+    }
+    
+    private void renderTemporaryQuad() {
+        int vao = 0;
+        int vbo = 0;
         
-        if (quadInitialized && quadVAO > 0) {
-            // Bind the VAO and draw
-            GL30.glBindVertexArray(quadVAO);
-            GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
-            GL30.glBindVertexArray(0);
-        } else {
-            // Fallback to creating a temporary quad
-            int vao = GL30.glGenVertexArrays();
+        try {
+            // Create a temporary VAO and VBO
+            vao = GL30.glGenVertexArrays();
+            if (vao <= 0) {
+                AMDium.LOGGER.error("Failed to create temporary VAO");
+                return;
+            }
+            
             GL30.glBindVertexArray(vao);
             
             // Create a fullscreen quad for rendering
@@ -717,7 +1079,13 @@ public class FSRProcessor {
                 1.0f, 1.0f, 0.0f, 1.0f, 1.0f
             };
             
-            int vbo = GL15.glGenBuffers();
+            vbo = GL15.glGenBuffers();
+            if (vbo <= 0) {
+                AMDium.LOGGER.error("Failed to create temporary VBO");
+                GL30.glDeleteVertexArrays(vao);
+                return;
+            }
+            
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo);
             
             FloatBuffer vertexBuffer = MemoryUtil.memAllocFloat(vertices.length);
@@ -736,14 +1104,21 @@ public class FSRProcessor {
             
             // Draw the quad
             GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
-            
+        } catch (Exception e) {
+            AMDium.LOGGER.error("Error in renderTemporaryQuad", e);
+        } finally {
             // Clean up
-            GL20.glDisableVertexAttribArray(0);
-            GL20.glDisableVertexAttribArray(1);
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
-            GL30.glBindVertexArray(0);
-            GL15.glDeleteBuffers(vbo);
-            GL30.glDeleteVertexArrays(vao);
+            if (vao > 0) {
+                GL20.glDisableVertexAttribArray(0);
+                GL20.glDisableVertexAttribArray(1);
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
+                GL30.glBindVertexArray(0);
+                GL30.glDeleteVertexArrays(vao);
+            }
+            
+            if (vbo > 0) {
+                GL15.glDeleteBuffers(vbo);
+            }
         }
     }
     
@@ -766,16 +1141,14 @@ public class FSRProcessor {
         try {
             // Check that all framebuffer IDs are valid
             if (inputFramebuffer <= 0 || upscaledFramebuffer <= 0 || 
-                outputFramebuffer <= 0 || historyFramebuffer <= 0 || 
-                motionVectorFramebuffer <= 0) {
+                outputFramebuffer <= 0 || depthTexture <= 0) {
                 AMDium.LOGGER.error("Invalid framebuffer IDs");
                 return false;
             }
             
             // Check that all texture IDs are valid
             if (inputTexture <= 0 || upscaledTexture <= 0 || 
-                outputTexture <= 0 || historyTexture <= 0 || 
-                motionVectorTexture <= 0 || depthTexture <= 0) {
+                outputTexture <= 0 || depthTexture <= 0) {
                 AMDium.LOGGER.error("Invalid texture IDs");
                 return false;
             }
@@ -796,18 +1169,6 @@ public class FSRProcessor {
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, outputFramebuffer);
             if (GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER) != GL30.GL_FRAMEBUFFER_COMPLETE) {
                 AMDium.LOGGER.error("Output framebuffer is incomplete");
-                return false;
-            }
-            
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, historyFramebuffer);
-            if (GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER) != GL30.GL_FRAMEBUFFER_COMPLETE) {
-                AMDium.LOGGER.error("History framebuffer is incomplete");
-                return false;
-            }
-            
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, motionVectorFramebuffer);
-            if (GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER) != GL30.GL_FRAMEBUFFER_COMPLETE) {
-                AMDium.LOGGER.error("Motion vector framebuffer is incomplete");
                 return false;
             }
             

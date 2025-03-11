@@ -1,6 +1,7 @@
 package com.kleeaiaiai.amdium;
 
 import com.kleeaiaiai.amdium.config.AMDiumConfig;
+import com.kleeaiaiai.amdium.config.AMDiumOptionsScreen;
 import com.kleeaiaiai.amdium.fsr.FSRProcessor;
 import com.kleeaiaiai.amdium.fsr.FSRType;
 import net.fabricmc.api.ClientModInitializer;
@@ -12,6 +13,7 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import org.lwjgl.glfw.GLFW;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +26,7 @@ public class AMDium implements ClientModInitializer {
     private FSRProcessor fsrProcessor;
     private AMDiumConfig config;
     private KeyBinding toggleFSRKey;
+    private KeyBinding openOptionsKey;
     private int lastFps = 0;
     private long lastFpsCheckTime = 0;
     private static final long FPS_CHECK_INTERVAL = 5000; // Check FPS every 5 seconds
@@ -43,9 +46,9 @@ public class AMDium implements ClientModInitializer {
         
         if (!config.isEnabled()) {
             config.setEnabled(true);
-            config.setFsrType(FSRType.FSR_3);
+            config.setFsrType(FSRType.FSR_1);
             config.save();
-            LOGGER.info("Auto-activated FSR 3.0 at startup");
+            LOGGER.info("Auto-activated FSR 1.0 at startup");
         }
         
         registerKeybindings();
@@ -54,6 +57,10 @@ public class AMDium implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (toggleFSRKey.wasPressed()) {
                 toggleFSR();
+            }
+            
+            if (openOptionsKey.wasPressed() && client.currentScreen == null) {
+                client.setScreen(new AMDiumOptionsScreen(null));
             }
             
             // Auto-enable FSR based on FPS if enabled
@@ -80,18 +87,15 @@ public class AMDium implements ClientModInitializer {
     private void initializeFSR() {
         try {
             if (!fsrInitialized && !hasError) {
-                // Start with FSR 1.0 for best compatibility
-                config.setFsrType(FSRType.FSR_1);
-                
                 fsrProcessor = new FSRProcessor();
                 fsrProcessor.initialize();
                 
-                // Test the FSR processor with a dummy frame to ensure it works
+                // Test the FSR processor with a dummy frame
                 testFSRProcessor();
                 
                 fsrInitialized = true;
-                errorCount = 0; // Reset error count on successful initialization
-                LOGGER.info("FSR processor initialized with type: " + config.getFsrType().getDisplayName());
+                errorCount = 0;
+                LOGGER.info("FSR processor initialized successfully");
             }
         } catch (Exception e) {
             LOGGER.error("Failed to initialize FSR processor", e);
@@ -99,21 +103,16 @@ public class AMDium implements ClientModInitializer {
         }
     }
     
-    /**
-     * Test the FSR processor with a dummy frame to ensure it works
-     */
     private void testFSRProcessor() {
         try {
-            // Get the current Minecraft framebuffer
             MinecraftClient client = MinecraftClient.getInstance();
             if (client != null && client.getFramebuffer() != null && client.getFramebuffer().fbo > 0) {
-                // Try to process a single frame
                 fsrProcessor.processFrame(client.getFramebuffer().fbo, System.currentTimeMillis());
                 LOGGER.info("FSR test frame processed successfully");
             }
         } catch (Exception e) {
             LOGGER.error("FSR test frame processing failed", e);
-            throw e; // Re-throw to trigger error handling
+            throw e;
         }
     }
     
@@ -127,30 +126,29 @@ public class AMDium implements ClientModInitializer {
             
             // Clean up static resources
             FSRProcessor.cleanupQuad();
+            
+            // Reset OpenGL state
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            GL20.glUseProgram(0);
+            
         } catch (Exception e) {
             LOGGER.error("Error cleaning up FSR processor", e);
-            // Make sure we reset to the default framebuffer to prevent black screen
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
         }
     }
     
     private void handleError() {
         errorCount++;
-        
-        // Reset to default framebuffer to prevent black screen
         GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
         
         if (errorCount >= MAX_ERROR_COUNT) {
-            // Disable FSR after too many errors
             hasError = true;
             config.setEnabled(false);
             config.save();
             LOGGER.error("Disabling FSR due to too many errors");
-            
-            // Clean up any resources
             cleanupFSR();
             
-            // Show a message to the user
             try {
                 MinecraftClient client = MinecraftClient.getInstance();
                 if (client != null) {
@@ -161,15 +159,6 @@ public class AMDium implements ClientModInitializer {
             } catch (Exception e) {
                 LOGGER.error("Failed to show error message to user", e);
             }
-        } else if (config.getFsrType() != FSRType.FSR_1) {
-            // Try falling back to FSR 1.0 which is more stable
-            LOGGER.info("Falling back to FSR 1.0 due to error");
-            config.setFsrType(FSRType.FSR_1);
-            config.save();
-            
-            // Reinitialize with FSR 1.0
-            cleanupFSR();
-            initializeFSR();
         }
     }
     
@@ -195,6 +184,13 @@ public class AMDium implements ClientModInitializer {
                 GLFW.GLFW_KEY_F10,
                 "category.amdium.keybinds"
         ));
+        
+        openOptionsKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.amdium.options",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_F9,
+                "category.amdium.keybinds"
+        ));
     }
     
     public static AMDium getInstance() {
@@ -215,20 +211,62 @@ public class AMDium implements ClientModInitializer {
     
     public void toggleFSR() {
         if (hasError) {
-            // If there was an error, try to reset and reinitialize
             hasError = false;
             errorCount = 0;
-            config.setFsrType(FSRType.FSR_1); // Use the most stable version
             config.setEnabled(true);
             config.save();
             
             cleanupFSR();
             initializeFSR();
-            LOGGER.info("Attempting to re-enable FSR after error");
+            LOGGER.info("Attempting to re-enable FSR");
         } else {
             config.setEnabled(!config.isEnabled());
             config.save();
-            LOGGER.info("FSR " + config.getFsrType().getDisplayName() + " " + (config.isEnabled() ? "enabled" : "disabled"));
+            LOGGER.info("FSR " + (config.isEnabled() ? "enabled" : "disabled"));
+        }
+    }
+    
+    public void restartFSRProcessor() {
+        if (fsrProcessor != null && fsrInitialized) {
+            try {
+                boolean isMainThread = MinecraftClient.getInstance().isOnThread();
+                if (!isMainThread) {
+                    LOGGER.warn("Attempting to restart FSR processor from non-main thread, deferring to next tick");
+                    return;
+                }
+                
+                LOGGER.info("Restarting FSR processor");
+                
+                // Clean up existing resources
+                cleanupFSR();
+                
+                // Wait for OpenGL to finish
+                GL11.glFinish();
+                
+                // Reset OpenGL state
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+                GL20.glUseProgram(0);
+                
+                // Reinitialize
+                initializeFSR();
+                
+                // Resize buffers to current screen size if possible
+                MinecraftClient mc = MinecraftClient.getInstance();
+                if (mc != null && mc.getWindow() != null) {
+                    int width = mc.getWindow().getFramebufferWidth();
+                    int height = mc.getWindow().getFramebufferHeight();
+                    fsrProcessor.resizeBuffers(width, height);
+                }
+                
+                LOGGER.info("FSR processor restarted successfully");
+                errorCount = 0;
+            } catch (Exception e) {
+                LOGGER.error("Failed to restart FSR processor", e);
+                handleError();
+            }
+        } else {
+            initializeFSR();
         }
     }
     
