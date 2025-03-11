@@ -19,7 +19,7 @@ AMDium is a Fabric mod that brings AMD’s FSR tech to Minecraft, giving your ga
 **Getting Started**  
 1. **Install Fabric** for Minecraft 1.20.1 ([guide here](https://fabricmc.net/use/)).  
 2. **Drag and Drop**: Download [AMDium](your-mod-link) and [Fabric API](https://www.curseforge.com/minecraft/mc-mods/fabric-api) into your `mods` folder.  
-3. **Launch Minecraft** and press `F9` to unleash FSR!  
+3. **Launch Minecraft** and play!
 
 **Pro Tips**  
 - **Sharpness Slider**: Default is 0.7. Crank it up for crispy textures, dial it down if things look grainy.  
