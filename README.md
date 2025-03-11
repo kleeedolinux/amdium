@@ -41,4 +41,3 @@ A tired dev who just wanted to play Minecraft with shaders (Kleeaiaiai).
 *License: MIT (aka "Do whatever, just don’t sue me!")*  
 
 ---  
-**TL;DR**: Install AMDium, press F10, and watch your FPS soar. Your eyeballs won’t even notice the trickery. 🚀
