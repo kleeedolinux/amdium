@@ -16,12 +16,11 @@ const float FSR_EASU_EDGE_POWER = 2.2;
 const float FSR_EASU_EDGE_SLOPE = 1.0;
 const float FSR_EASU_EDGE_THRESHOLD = 0.125;
 
-// Optimized weights for directional sampling
-const vec2 FSR_EASU_WEIGHTS[4] = vec2[4](
-    vec2( 0.0, -1.0),
-    vec2(-1.0,  0.0),
-    vec2( 1.0,  0.0),
-    vec2( 0.0,  1.0)
+// Optimized directional sampling weights
+const vec2[8] FSR_EASU_WEIGHTS = vec2[8](
+    vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
+    vec2(-1.0,  0.0),                   vec2(1.0,  0.0),
+    vec2(-1.0,  1.0), vec2(0.0,  1.0), vec2(1.0,  1.0)
 );
 
 // Helper functions
@@ -33,9 +32,8 @@ vec4 LoadInput(vec2 pos) {
     return texture(inputTexture, clamp(pos / inputSize, vec2(0.0), vec2(1.0)));
 }
 
-vec3 FsrEasuTap(vec2 pos, vec2 dir) {
-    vec4 c = LoadInput(pos + dir);
-    return c.rgb;
+vec3 FsrEasuSample(vec2 pos, vec2 dir) {
+    return LoadInput(pos + dir).rgb;
 }
 
 float CalcEdgeAttenuation(float edge, float luma) {
@@ -43,30 +41,22 @@ float CalcEdgeAttenuation(float edge, float luma) {
     return mix(1.0, edgePower, FSR_EASU_EDGE_SLOPE * luma);
 }
 
-void main() {
-    // Get position data from vertex shader
-    vec2 pos = posPos.xy;
-    vec2 posFract = posPos.zw;
-    
-    // Calculate base position
-    vec2 basePos = floor(pos * inputSize) / inputSize;
-    
-    // Sample center and neighbors
-    vec4 center = LoadInput(pos * inputSize);
+// Edge-Adaptive Spatial Upsampling (EASU)
+vec3 ApplyEASU(vec2 pos) {
+    vec4 center = LoadInput(pos);
     vec3 colorSum = center.rgb;
     float weightSum = 1.0;
     
-    // Edge detection and directional sampling
     float centerLuma = RGBToLuma(center.rgb);
     float maxLuma = centerLuma;
     float minLuma = centerLuma;
     vec2 maxLumaPos = vec2(0.0);
     vec2 minLumaPos = vec2(0.0);
     
-    // Sample in 4 directions and detect edges
-    for (int i = 0; i < 4; i++) {
-        vec2 samplePos = pos * inputSize + FSR_EASU_WEIGHTS[i];
-        vec3 sampleColor = FsrEasuTap(pos * inputSize, FSR_EASU_WEIGHTS[i]);
+    // Edge detection and directional sampling
+    for (int i = 0; i < 8; i++) {
+        vec2 samplePos = pos + FSR_EASU_WEIGHTS[i];
+        vec3 sampleColor = FsrEasuSample(pos, FSR_EASU_WEIGHTS[i]);
         float sampleLuma = RGBToLuma(sampleColor);
         
         if (sampleLuma > maxLuma) {
@@ -85,38 +75,60 @@ void main() {
         weightSum += weight;
     }
     
-    // Calculate edge strength
-    float lumaRange = maxLuma - minLuma;
-    float edgeStrength = smoothstep(0.0, FSR_EASU_EDGE_THRESHOLD, lumaRange);
+    return colorSum / weightSum;
+}
+
+// Robust Contrast Adaptive Sharpening (RCAS)
+vec3 ApplyRCAS(vec3 color, vec2 pos) {
+    float centerLuma = RGBToLuma(color);
+    vec3 sharpened = color;
     
-    // Apply edge-adaptive upscaling
-    vec3 upscaledColor = colorSum / weightSum;
+    float lumaMin = centerLuma;
+    float lumaMax = centerLuma;
     
-    // Apply directional sharpening based on edge detection
-    vec2 edgeDir = normalize(maxLumaPos - minLumaPos + vec2(0.0001));
-    vec3 sharpColor = upscaledColor;
-    
-    if (edgeStrength > 0.0) {
-        vec3 edgeColor1 = FsrEasuTap(pos * inputSize, edgeDir);
-        vec3 edgeColor2 = FsrEasuTap(pos * inputSize, -edgeDir);
+    // Sample neighbors for contrast-adaptive sharpening
+    for (int i = 0; i < 4; i++) {
+        vec2 offset = vec2(
+            float((i & 1) * 2 - 1),
+            float((i & 2) - 1)
+        ) / inputSize;
         
-        float edgeAttenuation = CalcEdgeAttenuation(edgeStrength, centerLuma);
-        sharpColor = mix(upscaledColor, 
-                        (edgeColor1 + edgeColor2) * 0.5, 
-                        edgeAttenuation * sharpness);
+        vec3 neighborColor = LoadInput(pos + offset).rgb;
+        float neighborLuma = RGBToLuma(neighborColor);
+        
+        lumaMin = min(lumaMin, neighborLuma);
+        lumaMax = max(lumaMax, neighborLuma);
     }
     
-    // Apply RCAS-like sharpening
+    // Calculate local contrast and apply sharpening
+    float lumaRange = lumaMax - lumaMin;
     float sharpenStrength = min(lumaRange / FSR_RCAS_LIMIT, 1.0) * sharpness;
-    vec3 finalColor = mix(upscaledColor, sharpColor, sharpenStrength);
+    
+    // Apply sharpening while preserving local contrast
+    sharpened = mix(color, 
+                    color * (1.0 + sharpenStrength),
+                    smoothstep(0.0, FSR_EASU_EDGE_THRESHOLD, lumaRange));
     
     // Ensure we don't exceed the local contrast range
-    float finalLuma = RGBToLuma(finalColor);
-    if (finalLuma > maxLuma) {
-        finalColor *= maxLuma / finalLuma;
-    } else if (finalLuma < minLuma) {
-        finalColor *= minLuma / finalLuma;
+    float finalLuma = RGBToLuma(sharpened);
+    if (finalLuma > lumaMax) {
+        sharpened *= lumaMax / finalLuma;
+    } else if (finalLuma < lumaMin) {
+        sharpened *= lumaMin / finalLuma;
     }
     
-    FragColor = vec4(finalColor, center.a);
+    return sharpened;
+}
+
+void main() {
+    // Get position data from vertex shader
+    vec2 pos = posPos.xy * inputSize;
+    
+    // Apply EASU upscaling
+    vec3 upscaledColor = ApplyEASU(pos);
+    
+    // Apply RCAS sharpening
+    vec3 finalColor = ApplyRCAS(upscaledColor, pos);
+    
+    FragColor = vec4(finalColor, 1.0);
 } 

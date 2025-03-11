@@ -6,7 +6,7 @@ layout (location = 1) in vec2 aTexCoord;
 
 // Output to fragment shader
 out vec2 texCoord;
-out vec4 posPos; // For FSR position calculations
+out vec4 posPos;
 
 // Uniforms for FSR calculations
 uniform vec2 inputSize;
@@ -17,13 +17,19 @@ void main() {
     texCoord = aTexCoord;
     
     // Calculate FSR position data
+    // This follows AMD's approach for precise pixel positioning
     vec2 inputPt = aTexCoord * inputSize;
     vec2 inputPtFloor = floor(inputPt);
-    vec2 inputPtFract = inputPt - inputPtFloor;
+    vec2 inputPtFract = fract(inputPt);
     
     // Pack position data for fragment shader
+    // xy = normalized input position
+    // zw = fractional part for subpixel precision
     posPos = vec4(
-        aTexCoord,              // xy = texcoord
-        inputPtFract            // zw = fractional part of input position
+        inputPtFloor / inputSize,  // Base position
+        inputPtFract              // Subpixel offset
     );
+    
+    // Apply half-pixel offset for correct texel center sampling
+    posPos.xy += vec2(0.5) / inputSize;
 } 
