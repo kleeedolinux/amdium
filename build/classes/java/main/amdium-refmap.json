@@ -3,6 +3,12 @@
     "com/kleeaiaiai/amdium/mixin/GameRendererMixin": {
       "onResized": "Lnet/minecraft/class_757;method_3169(II)V",
       "render": "Lnet/minecraft/class_757;method_3192(FJZ)V"
+    },
+    "com/kleeaiaiai/amdium/mixin/TitleScreenMixin": {
+      "init": "Lnet/minecraft/class_442;method_25426()V"
+    },
+    "com/kleeaiaiai/amdium/mixin/VideoOptionsScreenMixin": {
+      "init": "Lnet/minecraft/class_446;method_25426()V"
     }
   },
   "data": {
@@ -10,6 +16,12 @@
       "com/kleeaiaiai/amdium/mixin/GameRendererMixin": {
         "onResized": "Lnet/minecraft/class_757;method_3169(II)V",
         "render": "Lnet/minecraft/class_757;method_3192(FJZ)V"
+      },
+      "com/kleeaiaiai/amdium/mixin/TitleScreenMixin": {
+        "init": "Lnet/minecraft/class_442;method_25426()V"
+      },
+      "com/kleeaiaiai/amdium/mixin/VideoOptionsScreenMixin": {
+        "init": "Lnet/minecraft/class_446;method_25426()V"
       }
     }
   }
