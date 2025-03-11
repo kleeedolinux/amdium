@@ -22,9 +22,11 @@ public class GameRendererMixin {
     private Framebuffer originalFramebuffer;
     private boolean isProcessingFrame = false;
     private long lastResizeTime = 0;
-    private static final long RESIZE_THROTTLE_MS = 1000; // Only resize once per second at most
+    private static final long RESIZE_THROTTLE_MS = 500; // Reduced to 500ms for more responsive resizing
     private int lastWidth = 0;
     private int lastHeight = 0;
+    private int consecutiveErrors = 0;
+    private static final int MAX_CONSECUTIVE_ERRORS = 3;
     
     @Inject(method = "render", at = @At("HEAD"))
     private void onRenderStart(float tickDelta, long startTime, boolean tick, CallbackInfo ci) {
@@ -34,54 +36,56 @@ public class GameRendererMixin {
             FSRProcessor fsrProcessor = AMDium.getInstance().getFSRProcessor();
             if (fsrProcessor == null) return;
             
-            // Store the original framebuffer
+            // Store the original framebuffer and validate it
             originalFramebuffer = this.client.getFramebuffer();
             if (originalFramebuffer == null || originalFramebuffer.fbo <= 0) {
-                AMDium.LOGGER.error("Invalid original framebuffer");
-                return;
+                throw new IllegalStateException("Invalid original framebuffer");
             }
             
-            // Check if we need to resize the FSR buffers, but throttle the checks
+            // Get current dimensions and validate
             int width = originalFramebuffer.textureWidth;
             int height = originalFramebuffer.textureHeight;
             
             if (width <= 0 || height <= 0) {
-                AMDium.LOGGER.error("Invalid framebuffer dimensions: " + width + "x" + height);
-                return;
+                throw new IllegalStateException("Invalid framebuffer dimensions: " + width + "x" + height);
             }
             
+            // Calculate target dimensions
             long currentTime = System.currentTimeMillis();
             FSRQualityMode qualityMode = AMDium.getInstance().getConfig().getQualityMode();
             float scaleFactor = qualityMode.getScaleFactor();
-            int targetRenderWidth = (int)(width / scaleFactor);
-            int targetRenderHeight = (int)(height / scaleFactor);
+            int targetRenderWidth = Math.max(1, (int)(width / scaleFactor));
+            int targetRenderHeight = Math.max(1, (int)(height / scaleFactor));
             
-            // Only resize if dimensions have changed AND we haven't resized recently
-            // Also check if the current render dimensions are significantly different
+            // Check if resize is needed
             boolean dimensionsChanged = (lastWidth != width || lastHeight != height);
-            boolean renderDimensionsWrong = Math.abs(fsrProcessor.getRenderWidth() - targetRenderWidth) > 5 ||
-                                           Math.abs(fsrProcessor.getRenderHeight() - targetRenderHeight) > 5;
+            boolean renderDimensionsWrong = Math.abs(fsrProcessor.getRenderWidth() - targetRenderWidth) > 2 ||
+                                          Math.abs(fsrProcessor.getRenderHeight() - targetRenderHeight) > 2;
             
             if ((dimensionsChanged || renderDimensionsWrong) && 
                 (currentTime - lastResizeTime > RESIZE_THROTTLE_MS)) {
                 
-                AMDium.LOGGER.info("Resizing FSR buffers from " + fsrProcessor.getRenderWidth() + "x" + 
-                                  fsrProcessor.getRenderHeight() + " to target " + targetRenderWidth + "x" + targetRenderHeight);
+                // Ensure clean state before resize
+                GL11.glFinish();
+                GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+                
+                AMDium.LOGGER.info("Resizing FSR buffers: " + targetRenderWidth + "x" + targetRenderHeight + 
+                                  " -> " + width + "x" + height);
                 
                 fsrProcessor.resizeBuffers(width, height);
                 lastResizeTime = currentTime;
                 lastWidth = width;
                 lastHeight = height;
+                
+                // Reset error counter after successful resize
+                consecutiveErrors = 0;
             }
             
-            // Set the flag to prevent recursion
             isProcessingFrame = true;
+            
         } catch (Exception e) {
             AMDium.LOGGER.error("Error in render start", e);
-            // Report error to AMDium for handling
-            AMDium.getInstance().reportError();
-            // Reset to default framebuffer to prevent black screen
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            handleRenderError();
         }
     }
     
@@ -95,17 +99,26 @@ public class GameRendererMixin {
             
             // Process the frame with FSR
             if (originalFramebuffer != null && originalFramebuffer.fbo > 0) {
+                // Wait for any pending operations
+                GL11.glFinish();
+                
+                // Process frame and ensure it completes
                 fsrProcessor.processFrame(originalFramebuffer.fbo, System.currentTimeMillis());
+                GL11.glFinish();
+                
+                // Reset error counter on successful frame
+                consecutiveErrors = 0;
             }
         } catch (Exception e) {
             AMDium.LOGGER.error("Error in render end", e);
-            // Report error to AMDium for handling
-            AMDium.getInstance().reportError();
-            // Make sure we reset to the default framebuffer to prevent black screen
-            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            handleRenderError();
         } finally {
-            // Reset the flag
+            // Always reset state
             isProcessingFrame = false;
+            originalFramebuffer = null;
+            
+            // Ensure we're back to default framebuffer
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
         }
     }
     
@@ -114,16 +127,31 @@ public class GameRendererMixin {
         if (!AMDium.getInstance().isFSREnabled()) return;
         
         try {
-            // Store the new dimensions but don't resize immediately
-            // The render method will handle the resize on the next frame
+            // Force immediate resize on next frame
             lastWidth = width;
             lastHeight = height;
-            lastResizeTime = 0; // Reset the timer to force a resize on next frame
+            lastResizeTime = 0;
             
-            AMDium.LOGGER.info("Screen resized to " + width + "x" + height + ", will update FSR buffers on next frame");
+            // Clean up OpenGL state
+            GL11.glFinish();
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+            
+            AMDium.LOGGER.info("Screen resized to " + width + "x" + height + ", FSR buffers will update next frame");
         } catch (Exception e) {
             AMDium.LOGGER.error("Error in onResized", e);
-            // Report error to AMDium for handling
+            handleRenderError();
+        }
+    }
+    
+    private void handleRenderError() {
+        consecutiveErrors++;
+        
+        // Reset OpenGL state
+        GL11.glFinish();
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0);
+        
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            AMDium.LOGGER.error("Too many consecutive render errors, disabling FSR");
             AMDium.getInstance().reportError();
         }
     }
