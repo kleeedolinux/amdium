@@ -29,12 +29,12 @@ public class AMDium implements ClientModInitializer {
     private KeyBinding openOptionsKey;
     private int lastFps = 0;
     private long lastFpsCheckTime = 0;
-    private static final long FPS_CHECK_INTERVAL = 5000; // Check FPS every 5 seconds
-    private static final int LOW_FPS_THRESHOLD = 40; // FPS threshold to auto-enable FSR
+    private static final long FPS_CHECK_INTERVAL = 5000;
+    private static final int LOW_FPS_THRESHOLD = 40; 
     private boolean fsrInitialized = false;
     private boolean hasError = false;
     private int errorCount = 0;
-    private static final int MAX_ERROR_COUNT = 3; // Maximum number of errors before disabling FSR
+    private static final int MAX_ERROR_COUNT = 3; 
     
     @Override
     public void onInitializeClient() {
@@ -44,7 +44,6 @@ public class AMDium implements ClientModInitializer {
         config = new AMDiumConfig();
         config.load();
         
-        // Always start with FSR 1.0 enabled for best compatibility
         config.setFsrType(FSRType.FSR_1);
         if (!config.isEnabled()) {
             config.setEnabled(true);
@@ -54,9 +53,7 @@ public class AMDium implements ClientModInitializer {
         
         registerKeybindings();
         
-        // Register key press handler
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
-            // Initialize FSR after client is fully started
             client.execute(() -> {
                 try {
                     initializeFSR();
@@ -66,7 +63,6 @@ public class AMDium implements ClientModInitializer {
             });
         });
         
-        // Clean up FSR processor when the client stops
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
             cleanupFSR();
         });
@@ -75,7 +71,6 @@ public class AMDium implements ClientModInitializer {
     private void initializeFSR() {
         try {
             if (!fsrInitialized && !hasError) {
-                // Make sure we're on the main thread
                 if (!MinecraftClient.getInstance().isOnThread()) {
                     LOGGER.warn("Attempting to initialize FSR from non-main thread, deferring");
                     return;

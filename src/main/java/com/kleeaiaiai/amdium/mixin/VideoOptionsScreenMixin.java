@@ -19,8 +19,6 @@ public class VideoOptionsScreenMixin extends Screen {
     
     @Inject(method = "init", at = @At("RETURN"))
     private void addFSRButton(CallbackInfo ci) {
-        // Add FSR settings button at the top of the screen for better visibility
-        // Make it stand out with a different style
         ButtonWidget fsrButton = ButtonWidget.builder(
             Text.literal("AMD FSR Settings").formatted(Formatting.GOLD), 
             button -> this.client.setScreen(new AMDiumOptionsScreen(this))

@@ -31,7 +31,6 @@ public class AMDiumModMenuIntegration {
         protected void init() {
             buttonY = this.height / 6;
             
-            // Add a button to toggle FSR
             addButton(Text.translatable("option.amdium.enabled", config.isEnabled() ? "ON" : "OFF"),
                     button -> {
                         config.setEnabled(!config.isEnabled());
@@ -39,7 +38,6 @@ public class AMDiumModMenuIntegration {
                         settingsChanged = true;
                     });
             
-            // Add a button to toggle auto-enable
             addButton(Text.translatable("option.amdium.auto_enable", config.isAutoEnable() ? "ON" : "OFF"),
                     button -> {
                         config.setAutoEnable(!config.isAutoEnable());
@@ -47,7 +45,6 @@ public class AMDiumModMenuIntegration {
                         settingsChanged = true;
                     });
             
-            // Add a button to cycle through FSR types
             addButton(Text.translatable("option.amdium.fsr_type", config.getFsrType().getDisplayName()),
                     button -> {
                         FSRType[] types = FSRType.values();
@@ -57,7 +54,6 @@ public class AMDiumModMenuIntegration {
                         settingsChanged = true;
                     });
             
-            // Add a button to cycle through quality modes
             addButton(Text.translatable("option.amdium.quality_mode", config.getQualityMode().getDisplayName()),
                     button -> {
                         FSRQualityMode[] modes = FSRQualityMode.values();
@@ -67,7 +63,7 @@ public class AMDiumModMenuIntegration {
                         settingsChanged = true;
                     });
             
-            // Add a done button
+            
             addButton(Text.translatable("gui.done"),
                     button -> {
                         if (settingsChanged) {
@@ -94,18 +90,18 @@ public class AMDiumModMenuIntegration {
             this.renderBackground(context);
             context.drawTextWithShadow(this.textRenderer, this.title, this.width / 2 - this.textRenderer.getWidth(this.title) / 2, 15, 0xFFFFFF);
             
-            // Draw FSR type description
+            
             String description = config.getFsrType().getDescription();
             context.drawTextWithShadow(this.textRenderer, description, 
                     this.width / 2 - this.textRenderer.getWidth(description) / 2, 
                     this.height / 6 + BUTTON_SPACING * 3 + 5, 0xAAAAAA);
             
-            // Draw status indicator
+            
             String statusText = "Status: " + (AMDium.getInstance().isFSREnabled() ? "Active" : "Inactive");
             int statusColor = AMDium.getInstance().isFSREnabled() ? 0x55FF55 : 0xFF5555;
             context.drawTextWithShadow(this.textRenderer, statusText, 10, 10, statusColor);
             
-            // Draw settings changed indicator
+            
             if (settingsChanged) {
                 context.drawTextWithShadow(this.textRenderer, "* Settings changed",
                     this.width - 120, 10, 0xFFFF55);

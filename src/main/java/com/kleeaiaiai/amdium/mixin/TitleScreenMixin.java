@@ -19,7 +19,6 @@ public class TitleScreenMixin extends Screen {
     
     @Inject(method = "init", at = @At("RETURN"))
     private void addFSRButton(CallbackInfo ci) {
-        // Add a small FSR button in the bottom right corner
         int buttonWidth = 60;
         int buttonHeight = 20;
         int x = this.width - buttonWidth - 5;

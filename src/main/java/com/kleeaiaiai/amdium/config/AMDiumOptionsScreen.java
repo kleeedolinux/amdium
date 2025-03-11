@@ -154,7 +154,7 @@ public class AMDiumOptionsScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         this.renderBackground(context);
         
-        // Draw title
+        
         context.drawCenteredTextWithShadow(
             this.textRenderer, 
             this.title, 
@@ -163,7 +163,7 @@ public class AMDiumOptionsScreen extends Screen {
             TITLE_COLOR
         );
         
-        // Draw FSR info
+        
         String infoText = "FSR " + config.getFsrType().getDisplayName() + " - " + 
                          config.getQualityMode().getDisplayName() + " (" + 
                          String.format("%.1fx", config.getQualityMode().getScaleFactor()) + " scale)";
@@ -176,7 +176,7 @@ public class AMDiumOptionsScreen extends Screen {
             TITLE_COLOR
         );
         
-        // Draw status indicator
+        
         String statusText = "Status: " + (AMDium.getInstance().isFSREnabled() ? "Active" : "Inactive");
         Formatting statusColor = AMDium.getInstance().isFSREnabled() ? Formatting.GREEN : Formatting.RED;
         
@@ -188,7 +188,7 @@ public class AMDiumOptionsScreen extends Screen {
             TITLE_COLOR
         );
         
-        // Draw settings changed indicator
+        
         if (settingsChanged) {
             context.drawTextWithShadow(
                 this.textRenderer,
